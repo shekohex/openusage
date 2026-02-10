@@ -14,6 +14,15 @@ import { useSettingsTheme } from "@/hooks/app/use-settings-theme"
 import { useTrayIcon } from "@/hooks/app/use-tray-icon"
 import { track } from "@/lib/analytics"
 import {
+  buildAccountOptionsByPlugin,
+  filterCliProxySelectionsForProbe,
+  HIDDEN_PLUGIN_IDS,
+  OVERLAY_ENABLED_PLUGIN_IDS,
+  toCliProxyConfigView,
+  type CliProxyAuthFile,
+  type CliProxyConfigView,
+} from "@/lib/cliproxy-ui"
+import {
   REFRESH_COOLDOWN_MS,
   getEnabledPluginIds,
   loadCliProxyAccountSelections,
@@ -27,72 +36,6 @@ import { useAppUiStore } from "@/stores/app-ui-store"
 
 const TRAY_PROBE_DEBOUNCE_MS = 500
 const TRAY_SETTINGS_DEBOUNCE_MS = 2000
-
-type CliProxyConfigView = {
-  configured: boolean
-  baseUrl: string | null
-}
-
-type CliProxyAuthFile = {
-  id: string
-  name: string
-  provider: string
-  email?: string | null
-  authIndex?: string | null
-  disabled: boolean
-  unavailable: boolean
-  runtimeOnly?: boolean
-}
-
-type AccountOption = {
-  value: string
-  label: string
-}
-
-const OVERLAY_ENABLED_PLUGIN_IDS = new Set(["codex", "claude", "kimi", "antigravity"])
-const HIDDEN_PLUGIN_IDS = new Set(["cliproxyapi"])
-const LOCAL_ACCOUNT_VALUE = "__local__"
-const LOCAL_ACCOUNT_LABEL = "Local account"
-
-function mapAuthProviderToPluginId(provider: string) {
-  const normalized = provider.trim().toLowerCase()
-  if (normalized === "anthropic") return "claude"
-  return normalized
-}
-
-function buildAccountOptionsByPlugin(authFiles: CliProxyAuthFile[]) {
-  const byPlugin: Record<string, AccountOption[]> = {}
-  const seen: Record<string, Set<string>> = {}
-
-  for (const pluginId of OVERLAY_ENABLED_PLUGIN_IDS) {
-    byPlugin[pluginId] = [{ value: LOCAL_ACCOUNT_VALUE, label: LOCAL_ACCOUNT_LABEL }]
-    seen[pluginId] = new Set([LOCAL_ACCOUNT_VALUE])
-  }
-
-  for (const file of authFiles) {
-    if (file.disabled || file.unavailable) continue
-    if (!file.name || !file.name.toLowerCase().endsWith(".json")) continue
-
-    const pluginId = mapAuthProviderToPluginId(file.provider || "")
-    if (!OVERLAY_ENABLED_PLUGIN_IDS.has(pluginId)) continue
-
-    const rawSelection = (file.authIndex || file.id || file.name || "").trim()
-    if (!rawSelection) continue
-
-    const label = file.email?.trim()
-      ? `${file.email.trim()} (${file.name})`
-      : file.name
-
-    if (!seen[pluginId]) seen[pluginId] = new Set<string>()
-    if (seen[pluginId].has(rawSelection)) continue
-    seen[pluginId].add(rawSelection)
-
-    if (!byPlugin[pluginId]) byPlugin[pluginId] = []
-    byPlugin[pluginId].push({ value: rawSelection, label })
-  }
-
-  return byPlugin
-}
 
 function reconcileCliProxySelections(
   authFiles: CliProxyAuthFile[],
@@ -115,16 +58,6 @@ function reconcileCliProxySelections(
   }
 
   return nextSelections
-}
-
-function buildProbeAccountSelections(selections: CliProxyAccountSelections) {
-  return Object.entries(selections).reduce<Record<string, string>>((acc, [pluginId, rawSelection]) => {
-    if (!OVERLAY_ENABLED_PLUGIN_IDS.has(pluginId)) return acc
-    const selection = rawSelection.trim()
-    if (!selection || selection === LOCAL_ACCOUNT_VALUE) return acc
-    acc[pluginId] = selection
-    return acc
-  }, {})
 }
 
 function App() {
@@ -212,7 +145,7 @@ function App() {
   }, [accountOptionsByPlugin, cliProxySelections])
 
   const resolveStartBatchOptions = useCallback(() => {
-    const accountSelections = buildProbeAccountSelections(cliProxySelectionsRef.current)
+    const accountSelections = filterCliProxySelectionsForProbe(cliProxySelectionsRef.current)
     if (Object.keys(accountSelections).length === 0) return undefined
     return { accountSelections }
   }, [])
@@ -260,7 +193,8 @@ function App() {
 
     let cliProxyConfig: CliProxyConfigView = { configured: false, baseUrl: null }
     try {
-      cliProxyConfig = await invoke<CliProxyConfigView>("cliproxyapi_get_config")
+      const rawConfig = await invoke<unknown>("cliproxyapi_get_config")
+      cliProxyConfig = toCliProxyConfigView(rawConfig)
     } catch (error) {
       console.error("Failed to load CLIProxy config:", error)
     }
@@ -419,7 +353,8 @@ function App() {
         apiKey: cliProxyApiKey,
       })
 
-      const config = await invoke<CliProxyConfigView>("cliproxyapi_get_config")
+      const rawConfig = await invoke<unknown>("cliproxyapi_get_config")
+      const config = toCliProxyConfigView(rawConfig)
       setCliProxyConfigured(config.configured)
       setCliProxyBaseUrl(config.baseUrl ?? "")
       setCliProxyApiKey("")
