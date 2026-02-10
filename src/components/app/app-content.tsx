@@ -35,6 +35,21 @@ export type AppContentActionProps = {
   traySettingsPreview: TraySettingsPreview
   onGlobalShortcutChange: (value: GlobalShortcut) => void
   onStartOnLoginChange: (value: boolean) => void
+  accountOptionsByPlugin: Record<string, Array<{ value: string; label: string }>>
+  selectedAccountByPlugin: Record<string, string>
+  onAccountChange: (pluginId: string, account: string) => void
+  providerIconUrl?: string
+  cliProxyConfigured: boolean
+  cliProxyBaseUrl: string
+  cliProxyApiKey: string
+  cliProxyAuthFileCount: number
+  cliProxyBusy: boolean
+  cliProxyError: string | null
+  onCliProxyBaseUrlChange: (value: string) => void
+  onCliProxyApiKeyChange: (value: string) => void
+  onCliProxySave: () => void
+  onCliProxyRefresh: () => void
+  onCliProxyClear: () => void
 }
 
 export type AppContentProps = AppContentDerivedProps & AppContentActionProps
@@ -55,6 +70,21 @@ export function AppContent({
   traySettingsPreview,
   onGlobalShortcutChange,
   onStartOnLoginChange,
+  accountOptionsByPlugin,
+  selectedAccountByPlugin,
+  onAccountChange,
+  providerIconUrl,
+  cliProxyConfigured,
+  cliProxyBaseUrl,
+  cliProxyApiKey,
+  cliProxyAuthFileCount,
+  cliProxyBusy,
+  cliProxyError,
+  onCliProxyBaseUrlChange,
+  onCliProxyApiKeyChange,
+  onCliProxySave,
+  onCliProxyRefresh,
+  onCliProxyClear,
 }: AppContentProps) {
   const { activeView } = useAppUiStore(
     useShallow((state) => ({
@@ -90,6 +120,9 @@ export function AppContent({
         displayMode={displayMode}
         resetTimerDisplayMode={resetTimerDisplayMode}
         onResetTimerDisplayModeToggle={onResetTimerDisplayModeToggle}
+        accountOptionsByPlugin={accountOptionsByPlugin}
+        selectedAccountByPlugin={selectedAccountByPlugin}
+        onAccountChange={onAccountChange}
       />
     )
   }
@@ -115,6 +148,18 @@ export function AppContent({
         onGlobalShortcutChange={onGlobalShortcutChange}
         startOnLogin={startOnLogin}
         onStartOnLoginChange={onStartOnLoginChange}
+        providerIconUrl={providerIconUrl}
+        cliProxyConfigured={cliProxyConfigured}
+        cliProxyBaseUrl={cliProxyBaseUrl}
+        cliProxyApiKey={cliProxyApiKey}
+        cliProxyAuthFileCount={cliProxyAuthFileCount}
+        cliProxyBusy={cliProxyBusy}
+        cliProxyError={cliProxyError}
+        onCliProxyBaseUrlChange={onCliProxyBaseUrlChange}
+        onCliProxyApiKeyChange={onCliProxyApiKeyChange}
+        onCliProxySave={onCliProxySave}
+        onCliProxyRefresh={onCliProxyRefresh}
+        onCliProxyClear={onCliProxyClear}
       />
     )
   }
@@ -130,6 +175,13 @@ export function AppContent({
       displayMode={displayMode}
       resetTimerDisplayMode={resetTimerDisplayMode}
       onResetTimerDisplayModeToggle={onResetTimerDisplayModeToggle}
+      accountOptions={selectedPlugin ? accountOptionsByPlugin[selectedPlugin.meta.id] : undefined}
+      selectedAccount={selectedPlugin ? selectedAccountByPlugin[selectedPlugin.meta.id] : undefined}
+      onAccountChange={
+        selectedPlugin
+          ? (account) => onAccountChange(selectedPlugin.meta.id, account)
+          : undefined
+      }
     />
   )
 }
