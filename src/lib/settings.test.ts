@@ -11,6 +11,7 @@ import {
   arePluginSettingsEqual,
   getEnabledPluginIds,
   loadAutoUpdateInterval,
+  loadCliProxyAccountSelections,
   loadDisplayMode,
   loadGlobalShortcut,
   loadMenubarIconStyle,
@@ -21,6 +22,7 @@ import {
   loadThemeMode,
   normalizePluginSettings,
   saveAutoUpdateInterval,
+  saveCliProxyAccountSelections,
   saveDisplayMode,
   saveGlobalShortcut,
   saveMenubarIconStyle,
@@ -338,5 +340,29 @@ describe("settings", () => {
   it("falls back to default for invalid start on login value", async () => {
     storeState.set("startOnLogin", "invalid")
     await expect(loadStartOnLogin()).resolves.toBe(DEFAULT_START_ON_LOGIN)
+  })
+
+  it("loads empty CLIProxy account selections when missing", async () => {
+    await expect(loadCliProxyAccountSelections()).resolves.toEqual({})
+  })
+
+  it("loads sanitized CLIProxy account selections", async () => {
+    storeState.set("cliProxyAccountSelections", {
+      codex: " idx-codex ",
+      claude: 123,
+      "": "bad",
+    })
+
+    await expect(loadCliProxyAccountSelections()).resolves.toEqual({
+      codex: "idx-codex",
+    })
+  })
+
+  it("saves CLIProxy account selections", async () => {
+    await saveCliProxyAccountSelections({ codex: "idx-a", claude: "idx-b" })
+    await expect(loadCliProxyAccountSelections()).resolves.toEqual({
+      codex: "idx-a",
+      claude: "idx-b",
+    })
   })
 })
