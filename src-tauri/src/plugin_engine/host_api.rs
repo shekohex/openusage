@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+pub type CredentialOverlay = std::collections::HashMap<String, String>;
+pub type SharedCredentialOverlay = std::sync::Arc<std::sync::Mutex<CredentialOverlay>>;
+
 const WHITELISTED_ENV_VARS: [&str; 16] = [
     "CODEX_HOME",
     "CLAUDE_CONFIG_DIR",
@@ -346,6 +349,8 @@ fn redact_body(body: &str) -> String {
         "sessionToken",
         "auth_token",
         "authToken",
+        "OPENAI_API_KEY",
+        "openai_api_key",
         "id_token",
         "idToken",
         "accessToken",
@@ -515,6 +520,7 @@ pub fn inject_host_api<'js>(
     plugin_id: &str,
     app_data_dir: &PathBuf,
     app_version: &str,
+    credential_overlay: Option<SharedCredentialOverlay>,
 ) -> rquickjs::Result<()> {
     let globals = ctx.globals();
     let probe_ctx = Object::new(ctx.clone())?;
@@ -541,7 +547,7 @@ pub fn inject_host_api<'js>(
 
     let host = Object::new(ctx.clone())?;
     inject_log(ctx, &host, plugin_id)?;
-    inject_fs(ctx, &host)?;
+    inject_fs(ctx, &host, credential_overlay)?;
     inject_crypto(ctx, &host)?;
     inject_env(ctx, &host, plugin_id)?;
     inject_http(ctx, &host, plugin_id)?;
@@ -587,16 +593,30 @@ fn inject_log<'js>(ctx: &Ctx<'js>, host: &Object<'js>, plugin_id: &str) -> rquic
     Ok(())
 }
 
-fn inject_fs<'js>(ctx: &Ctx<'js>, host: &Object<'js>) -> rquickjs::Result<()> {
+fn inject_fs<'js>(
+    ctx: &Ctx<'js>,
+    host: &Object<'js>,
+    credential_overlay: Option<SharedCredentialOverlay>,
+) -> rquickjs::Result<()> {
     let fs_obj = Object::new(ctx.clone())?;
+    let overlay_for_exists = credential_overlay.clone();
 
     fs_obj.set(
         "exists",
         Function::new(ctx.clone(), move |path: String| -> bool {
             let expanded = expand_path(&path);
+            if let Some(overlay) = overlay_for_exists.as_ref() {
+                if let Ok(locked) = overlay.lock() {
+                    if locked.contains_key(&expanded) || locked.contains_key(&path) {
+                        return true;
+                    }
+                }
+            }
             std::path::Path::new(&expanded).exists()
         })?,
     )?;
+
+    let overlay_for_read = credential_overlay.clone();
 
     fs_obj.set(
         "readText",
@@ -604,11 +624,20 @@ fn inject_fs<'js>(ctx: &Ctx<'js>, host: &Object<'js>) -> rquickjs::Result<()> {
             ctx.clone(),
             move |ctx_inner: Ctx<'_>, path: String| -> rquickjs::Result<String> {
                 let expanded = expand_path(&path);
+                if let Some(overlay) = overlay_for_read.as_ref() {
+                    if let Ok(locked) = overlay.lock() {
+                        if let Some(value) = locked.get(&expanded).or_else(|| locked.get(&path)) {
+                            return Ok(value.clone());
+                        }
+                    }
+                }
                 std::fs::read_to_string(&expanded)
                     .map_err(|e| Exception::throw_message(&ctx_inner, &e.to_string()))
             },
         )?,
     )?;
+
+    let overlay_for_write = credential_overlay.clone();
 
     fs_obj.set(
         "writeText",
@@ -616,6 +645,15 @@ fn inject_fs<'js>(ctx: &Ctx<'js>, host: &Object<'js>) -> rquickjs::Result<()> {
             ctx.clone(),
             move |ctx_inner: Ctx<'_>, path: String, content: String| -> rquickjs::Result<()> {
                 let expanded = expand_path(&path);
+                if let Some(overlay) = overlay_for_write.as_ref() {
+                    let mut locked = overlay
+                        .lock()
+                        .map_err(|e| Exception::throw_message(&ctx_inner, &e.to_string()))?;
+                    if locked.contains_key(&expanded) || locked.contains_key(&path) {
+                        locked.insert(expanded, content);
+                        return Ok(());
+                    }
+                }
                 std::fs::write(&expanded, &content)
                     .map_err(|e| Exception::throw_message(&ctx_inner, &e.to_string()))
             },
@@ -2611,7 +2649,7 @@ mod tests {
         let ctx = Context::full(&rt).expect("context");
         ctx.with(|ctx| {
             let app_data = std::env::temp_dir();
-            inject_host_api(&ctx, "test", &app_data, "0.0.0").expect("inject host api");
+            inject_host_api(&ctx, "test", &app_data, "0.0.0", None).expect("inject host api");
             let globals = ctx.globals();
             let probe_ctx: Object = globals.get("__openusage_ctx").expect("probe ctx");
             let host: Object = probe_ctx.get("host").expect("host");
@@ -2655,7 +2693,7 @@ mod tests {
         let ctx = Context::full(&rt).expect("context");
         ctx.with(|ctx| {
             let app_data = std::env::temp_dir();
-            inject_host_api(&ctx, "test", &app_data, "0.0.0").expect("inject host api");
+            inject_host_api(&ctx, "test", &app_data, "0.0.0", None).expect("inject host api");
             let globals = ctx.globals();
             let probe_ctx: Object = globals.get("__openusage_ctx").expect("probe ctx");
             let host: Object = probe_ctx.get("host").expect("host");
@@ -2924,6 +2962,17 @@ mod tests {
         let body = r#"{"key": "sk-1234567890abcdefghij"}"#;
         let redacted = redact_body(body);
         assert!(redacted.contains("sk-1...ghij"));
+    }
+
+    #[test]
+    fn redact_body_redacts_openai_api_key_field() {
+        let body = r#"{"OPENAI_API_KEY":"sk-proj-abcdefghijklmnopqrstuvwxyz123456"}"#;
+        let redacted = redact_body(body);
+        assert!(
+            !redacted.contains("sk-proj-abcdefghijklmnopqrstuvwxyz123456"),
+            "OPENAI_API_KEY should be redacted, got: {}",
+            redacted
+        );
     }
 
     #[test]

@@ -4,6 +4,11 @@ use rquickjs::{Array, Context, Ctx, Error, Object, Promise, Runtime, Value};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Default)]
+pub struct RunProbeOptions {
+    pub credential_overlay: Option<host_api::SharedCredentialOverlay>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ProgressFormat {
@@ -50,7 +55,12 @@ pub struct PluginOutput {
     pub icon_url: String,
 }
 
-pub fn run_probe(plugin: &LoadedPlugin, app_data_dir: &PathBuf, app_version: &str) -> PluginOutput {
+pub fn run_probe(
+    plugin: &LoadedPlugin,
+    app_data_dir: &PathBuf,
+    app_version: &str,
+    options: RunProbeOptions,
+) -> PluginOutput {
     let fallback = error_output(plugin, "runtime error".to_string());
 
     let rt = match Runtime::new() {
@@ -68,9 +78,10 @@ pub fn run_probe(plugin: &LoadedPlugin, app_data_dir: &PathBuf, app_version: &st
     let entry_script = plugin.entry_script.clone();
     let icon_url = plugin.icon_data_url.clone();
     let app_data = app_data_dir.clone();
+    let overlay = options.credential_overlay.clone();
 
     ctx.with(|ctx| {
-        if host_api::inject_host_api(&ctx, &plugin_id, &app_data, app_version).is_err() {
+        if host_api::inject_host_api(&ctx, &plugin_id, &app_data, app_version, overlay).is_err() {
             return error_output(plugin, "host api injection failed".to_string());
         }
         if host_api::patch_http_wrapper(&ctx).is_err() {
@@ -521,7 +532,12 @@ mod tests {
             };
             "#,
         );
-        let output = run_probe(&plugin, &temp_app_dir("sync"), "0.0.0");
+        let output = run_probe(
+            &plugin,
+            &temp_app_dir("sync"),
+            "0.0.0",
+            RunProbeOptions::default(),
+        );
         assert_eq!(error_text(output), "boom");
     }
 
@@ -536,7 +552,12 @@ mod tests {
             };
             "#,
         );
-        let output = run_probe(&plugin, &temp_app_dir("async"), "0.0.0");
+        let output = run_probe(
+            &plugin,
+            &temp_app_dir("async"),
+            "0.0.0",
+            RunProbeOptions::default(),
+        );
         assert_eq!(error_text(output), "boom");
     }
 

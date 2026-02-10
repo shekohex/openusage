@@ -295,7 +295,12 @@ async fn start_probe_batch(
         tauri::async_runtime::spawn_blocking(move || {
             let plugin_id = plugin.manifest.id.clone();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                plugin_engine::runtime::run_probe(&plugin, &data_dir, &version)
+                plugin_engine::runtime::run_probe(
+                    &plugin,
+                    &data_dir,
+                    &version,
+                    plugin_engine::runtime::RunProbeOptions::default(),
+                )
             }));
 
             match result {
