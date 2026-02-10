@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useRef } from "react"
+import { invoke } from "@tauri-apps/api/core"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { AppShell } from "@/components/app/app-shell"
+import { type PluginContextAction } from "@/components/side-nav"
 import { useAppPluginViews } from "@/hooks/app/use-app-plugin-views"
 import { useProbe } from "@/hooks/app/use-probe"
 import { useSettingsBootstrap } from "@/hooks/app/use-settings-bootstrap"
@@ -11,14 +13,119 @@ import { useSettingsSystemActions } from "@/hooks/app/use-settings-system-action
 import { useSettingsTheme } from "@/hooks/app/use-settings-theme"
 import { useTrayIcon } from "@/hooks/app/use-tray-icon"
 import { track } from "@/lib/analytics"
-import { REFRESH_COOLDOWN_MS, savePluginSettings } from "@/lib/settings"
-import { type PluginContextAction } from "@/components/side-nav"
+import {
+  REFRESH_COOLDOWN_MS,
+  getEnabledPluginIds,
+  loadCliProxyAccountSelections,
+  saveCliProxyAccountSelections,
+  savePluginSettings,
+  type CliProxyAccountSelections,
+} from "@/lib/settings"
 import { useAppPluginStore } from "@/stores/app-plugin-store"
 import { useAppPreferencesStore } from "@/stores/app-preferences-store"
 import { useAppUiStore } from "@/stores/app-ui-store"
 
 const TRAY_PROBE_DEBOUNCE_MS = 500
 const TRAY_SETTINGS_DEBOUNCE_MS = 2000
+
+type CliProxyConfigView = {
+  configured: boolean
+  baseUrl: string | null
+}
+
+type CliProxyAuthFile = {
+  id: string
+  name: string
+  provider: string
+  email?: string | null
+  authIndex?: string | null
+  disabled: boolean
+  unavailable: boolean
+  runtimeOnly?: boolean
+}
+
+type AccountOption = {
+  value: string
+  label: string
+}
+
+const OVERLAY_ENABLED_PLUGIN_IDS = new Set(["codex", "claude", "kimi", "antigravity"])
+const HIDDEN_PLUGIN_IDS = new Set(["cliproxyapi"])
+const LOCAL_ACCOUNT_VALUE = "__local__"
+const LOCAL_ACCOUNT_LABEL = "Local account"
+
+function mapAuthProviderToPluginId(provider: string) {
+  const normalized = provider.trim().toLowerCase()
+  if (normalized === "anthropic") return "claude"
+  return normalized
+}
+
+function buildAccountOptionsByPlugin(authFiles: CliProxyAuthFile[]) {
+  const byPlugin: Record<string, AccountOption[]> = {}
+  const seen: Record<string, Set<string>> = {}
+
+  for (const pluginId of OVERLAY_ENABLED_PLUGIN_IDS) {
+    byPlugin[pluginId] = [{ value: LOCAL_ACCOUNT_VALUE, label: LOCAL_ACCOUNT_LABEL }]
+    seen[pluginId] = new Set([LOCAL_ACCOUNT_VALUE])
+  }
+
+  for (const file of authFiles) {
+    if (file.disabled || file.unavailable) continue
+    if (!file.name || !file.name.toLowerCase().endsWith(".json")) continue
+
+    const pluginId = mapAuthProviderToPluginId(file.provider || "")
+    if (!OVERLAY_ENABLED_PLUGIN_IDS.has(pluginId)) continue
+
+    const rawSelection = (file.authIndex || file.id || file.name || "").trim()
+    if (!rawSelection) continue
+
+    const label = file.email?.trim()
+      ? `${file.email.trim()} (${file.name})`
+      : file.name
+
+    if (!seen[pluginId]) seen[pluginId] = new Set<string>()
+    if (seen[pluginId].has(rawSelection)) continue
+    seen[pluginId].add(rawSelection)
+
+    if (!byPlugin[pluginId]) byPlugin[pluginId] = []
+    byPlugin[pluginId].push({ value: rawSelection, label })
+  }
+
+  return byPlugin
+}
+
+function reconcileCliProxySelections(
+  authFiles: CliProxyAuthFile[],
+  selections: CliProxyAccountSelections
+) {
+  const optionsByPlugin = buildAccountOptionsByPlugin(authFiles)
+  const nextSelections: CliProxyAccountSelections = { ...selections }
+
+  for (const [pluginId, options] of Object.entries(optionsByPlugin)) {
+    if (options.length === 0) continue
+    const current = (nextSelections[pluginId] || "").trim()
+    if (!current || !options.some((option) => option.value === current)) {
+      nextSelections[pluginId] = options[0].value
+    }
+  }
+
+  for (const pluginId of OVERLAY_ENABLED_PLUGIN_IDS) {
+    if (optionsByPlugin[pluginId]?.length) continue
+    delete nextSelections[pluginId]
+  }
+
+  return nextSelections
+}
+
+function buildProbeAccountSelections(selections: CliProxyAccountSelections) {
+  return Object.entries(selections).reduce<Record<string, string>>((acc, [pluginId, rawSelection]) => {
+    if (!OVERLAY_ENABLED_PLUGIN_IDS.has(pluginId)) return acc
+    const selection = rawSelection.trim()
+    if (!selection || selection === LOCAL_ACCOUNT_VALUE) return acc
+    acc[pluginId] = selection
+    return acc
+  }, {})
+}
 
 function App() {
   const {
@@ -75,6 +182,41 @@ function App() {
     }))
   )
 
+  const [cliProxyConfigured, setCliProxyConfigured] = useState(false)
+  const [cliProxyBaseUrl, setCliProxyBaseUrl] = useState("")
+  const [cliProxyApiKey, setCliProxyApiKey] = useState("")
+  const [cliProxyAuthFiles, setCliProxyAuthFiles] = useState<CliProxyAuthFile[]>([])
+  const [cliProxyBusy, setCliProxyBusy] = useState(false)
+  const [cliProxyError, setCliProxyError] = useState<string | null>(null)
+  const [cliProxySelections, setCliProxySelections] = useState<CliProxyAccountSelections>({})
+
+  const cliProxySelectionsRef = useRef<CliProxyAccountSelections>({})
+  useEffect(() => {
+    cliProxySelectionsRef.current = cliProxySelections
+  }, [cliProxySelections])
+
+  const accountOptionsByPlugin = useMemo(
+    () => buildAccountOptionsByPlugin(cliProxyAuthFiles),
+    [cliProxyAuthFiles]
+  )
+
+  const selectedAccountByPlugin = useMemo(() => {
+    const next: CliProxyAccountSelections = {}
+    for (const [pluginId, options] of Object.entries(accountOptionsByPlugin)) {
+      if (options.length === 0) continue
+      const configured = (cliProxySelections[pluginId] || "").trim()
+      const matched = options.find((option) => option.value === configured)
+      next[pluginId] = matched?.value ?? options[0].value
+    }
+    return next
+  }, [accountOptionsByPlugin, cliProxySelections])
+
+  const resolveStartBatchOptions = useCallback(() => {
+    const accountSelections = buildProbeAccountSelections(cliProxySelectionsRef.current)
+    if (Object.keys(accountSelections).length === 0) return undefined
+    return { accountSelections }
+  }, [])
+
   const scheduleProbeTrayUpdateRef = useRef<() => void>(() => {})
   const handleProbeResult = useCallback(() => {
     scheduleProbeTrayUpdateRef.current()
@@ -93,7 +235,59 @@ function App() {
     pluginSettings,
     autoUpdateInterval,
     onProbeResult: handleProbeResult,
+    resolveStartBatchOptions,
   })
+
+  const refreshCliProxyAuthFiles = useCallback(async () => {
+    const authFiles = await invoke<CliProxyAuthFile[]>("cliproxyapi_list_auth_files")
+    const nextSelections = reconcileCliProxySelections(authFiles, cliProxySelectionsRef.current)
+
+    cliProxySelectionsRef.current = nextSelections
+    setCliProxyAuthFiles(authFiles)
+    setCliProxySelections(nextSelections)
+    await saveCliProxyAccountSelections(nextSelections)
+
+    return { authFiles, nextSelections }
+  }, [])
+
+  const initializeCliProxyState = useCallback(async () => {
+    let storedSelections: CliProxyAccountSelections = {}
+    try {
+      storedSelections = await loadCliProxyAccountSelections()
+    } catch (error) {
+      console.error("Failed to load CLIProxy account selections:", error)
+    }
+
+    let cliProxyConfig: CliProxyConfigView = { configured: false, baseUrl: null }
+    try {
+      cliProxyConfig = await invoke<CliProxyConfigView>("cliproxyapi_get_config")
+    } catch (error) {
+      console.error("Failed to load CLIProxy config:", error)
+    }
+
+    let authFiles: CliProxyAuthFile[] = []
+    if (cliProxyConfig.configured) {
+      try {
+        authFiles = await invoke<CliProxyAuthFile[]>("cliproxyapi_list_auth_files")
+      } catch (error) {
+        console.error("Failed to list CLIProxy auth files:", error)
+      }
+    }
+
+    const effectiveSelections = reconcileCliProxySelections(authFiles, storedSelections)
+    cliProxySelectionsRef.current = effectiveSelections
+
+    setCliProxyConfigured(cliProxyConfig.configured)
+    setCliProxyBaseUrl(cliProxyConfig.baseUrl ?? "")
+    setCliProxyApiKey("")
+    setCliProxyAuthFiles(authFiles)
+    setCliProxySelections(effectiveSelections)
+    setCliProxyError(null)
+
+    void saveCliProxyAccountSelections(effectiveSelections).catch((error) => {
+      console.error("Failed to persist CLIProxy account selections:", error)
+    })
+  }, [])
 
   const { scheduleTrayIconUpdate, traySettingsPreview } = useTrayIcon({
     pluginsMeta,
@@ -123,6 +317,7 @@ function App() {
     setLoadingForPlugins,
     setErrorForPlugins,
     startBatch,
+    beforeInitialProbe: initializeCliProxyState,
   })
 
   useSettingsTheme(themeMode)
@@ -171,6 +366,10 @@ function App() {
     pluginSettings,
     pluginsMeta,
   })
+  const visibleSettingsPlugins = useMemo(
+    () => settingsPlugins.filter((plugin) => !HIDDEN_PLUGIN_IDS.has(plugin.id)),
+    [settingsPlugins]
+  )
 
   const { displayPlugins, navPlugins, selectedPlugin } = useAppPluginViews({
     activeView,
@@ -184,6 +383,110 @@ function App() {
   useEffect(() => {
     pluginSettingsRef.current = pluginSettings
   }, [pluginSettings])
+
+  const handleAccountSelectionChange = useCallback(
+    (pluginId: string, account: string) => {
+      const selected = account.trim()
+      const current = (cliProxySelectionsRef.current[pluginId] || "").trim()
+      if (!selected || selected === current) return
+
+      const nextSelections: CliProxyAccountSelections = {
+        ...cliProxySelectionsRef.current,
+        [pluginId]: selected,
+      }
+
+      cliProxySelectionsRef.current = nextSelections
+      setCliProxySelections(nextSelections)
+      void saveCliProxyAccountSelections(nextSelections).catch((error) => {
+        console.error("Failed to save CLIProxy account selections:", error)
+      })
+
+      setLoadingForPlugins([pluginId])
+      startBatch([pluginId]).catch((error) => {
+        console.error("Failed to refresh plugin with selected account:", error)
+        setErrorForPlugins([pluginId], "Failed to start probe")
+      })
+    },
+    [setErrorForPlugins, setLoadingForPlugins, startBatch]
+  )
+
+  const handleCliProxySave = useCallback(async () => {
+    setCliProxyBusy(true)
+    setCliProxyError(null)
+    try {
+      await invoke("cliproxyapi_set_config", {
+        baseUrl: cliProxyBaseUrl,
+        apiKey: cliProxyApiKey,
+      })
+
+      const config = await invoke<CliProxyConfigView>("cliproxyapi_get_config")
+      setCliProxyConfigured(config.configured)
+      setCliProxyBaseUrl(config.baseUrl ?? "")
+      setCliProxyApiKey("")
+
+      const { nextSelections } = await refreshCliProxyAuthFiles()
+      cliProxySelectionsRef.current = nextSelections
+
+      const currentSettings = pluginSettingsRef.current
+      if (currentSettings) {
+        const enabledIds = getEnabledPluginIds(currentSettings)
+        if (enabledIds.length > 0) {
+          setLoadingForPlugins(enabledIds)
+          await startBatch(enabledIds)
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setCliProxyError(message)
+    } finally {
+      setCliProxyBusy(false)
+    }
+  }, [
+    cliProxyApiKey,
+    cliProxyBaseUrl,
+    refreshCliProxyAuthFiles,
+    setLoadingForPlugins,
+    startBatch,
+  ])
+
+  const handleCliProxyRefresh = useCallback(async () => {
+    setCliProxyBusy(true)
+    setCliProxyError(null)
+    try {
+      await refreshCliProxyAuthFiles()
+      setCliProxyConfigured(true)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setCliProxyError(message)
+    } finally {
+      setCliProxyBusy(false)
+    }
+  }, [refreshCliProxyAuthFiles])
+
+  const handleCliProxyClear = useCallback(async () => {
+    setCliProxyBusy(true)
+    setCliProxyError(null)
+    try {
+      await invoke("cliproxyapi_clear_config")
+      setCliProxyConfigured(false)
+      setCliProxyBaseUrl("")
+      setCliProxyApiKey("")
+      setCliProxyAuthFiles([])
+
+      const nextSelections: CliProxyAccountSelections = { ...cliProxySelectionsRef.current }
+      for (const pluginId of OVERLAY_ENABLED_PLUGIN_IDS) {
+        delete nextSelections[pluginId]
+      }
+      cliProxySelectionsRef.current = nextSelections
+      setCliProxySelections(nextSelections)
+      await saveCliProxyAccountSelections(nextSelections)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setCliProxyError(message)
+    } finally {
+      setCliProxyBusy(false)
+    }
+  }, [])
 
   const handlePluginContextAction = useCallback(
     (pluginId: string, action: PluginContextAction) => {
@@ -231,7 +534,7 @@ function App() {
       onRefreshAll={handleRefreshAll}
       navPlugins={navPlugins}
       displayPlugins={displayPlugins}
-      settingsPlugins={settingsPlugins}
+      settingsPlugins={visibleSettingsPlugins}
       autoUpdateNextAt={autoUpdateNextAt}
       selectedPlugin={selectedPlugin}
       onPluginContextAction={handlePluginContextAction}
@@ -249,6 +552,27 @@ function App() {
         traySettingsPreview,
         onGlobalShortcutChange: handleGlobalShortcutChange,
         onStartOnLoginChange: handleStartOnLoginChange,
+        accountOptionsByPlugin,
+        selectedAccountByPlugin,
+        onAccountChange: handleAccountSelectionChange,
+        providerIconUrl: navPlugins[0]?.iconUrl,
+        cliProxyConfigured,
+        cliProxyBaseUrl,
+        cliProxyApiKey,
+        cliProxyAuthFileCount: cliProxyAuthFiles.length,
+        cliProxyBusy,
+        cliProxyError,
+        onCliProxyBaseUrlChange: setCliProxyBaseUrl,
+        onCliProxyApiKeyChange: setCliProxyApiKey,
+        onCliProxySave: () => {
+          void handleCliProxySave()
+        },
+        onCliProxyRefresh: () => {
+          void handleCliProxyRefresh()
+        },
+        onCliProxyClear: () => {
+          void handleCliProxyClear()
+        },
       }}
     />
   )

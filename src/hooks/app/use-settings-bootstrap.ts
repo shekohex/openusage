@@ -49,6 +49,7 @@ type UseSettingsBootstrapArgs = {
   setLoadingForPlugins: (ids: string[]) => void
   setErrorForPlugins: (ids: string[], error: string) => void
   startBatch: (pluginIds?: string[]) => Promise<string[] | undefined>
+  beforeInitialProbe?: () => Promise<void>
 }
 
 export function useSettingsBootstrap({
@@ -64,6 +65,7 @@ export function useSettingsBootstrap({
   setLoadingForPlugins,
   setErrorForPlugins,
   startBatch,
+  beforeInitialProbe,
 }: UseSettingsBootstrapArgs) {
   const applyStartOnLogin = useCallback(async (value: boolean) => {
     if (!isTauri()) return
@@ -163,6 +165,14 @@ export function useSettingsBootstrap({
           setStartOnLogin(storedStartOnLogin)
           setMenubarIconStyle(storedMenubarIconStyle)
 
+          if (beforeInitialProbe) {
+            try {
+              await beforeInitialProbe()
+            } catch (error) {
+              console.error("Failed to run pre-probe bootstrap:", error)
+            }
+          }
+
           const enabledIds = getEnabledPluginIds(normalized)
           setLoadingForPlugins(enabledIds)
           try {
@@ -199,6 +209,7 @@ export function useSettingsBootstrap({
     setStartOnLogin,
     setThemeMode,
     startBatch,
+    beforeInitialProbe,
   ])
 
   return {

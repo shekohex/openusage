@@ -12,12 +12,14 @@ type UseProbeArgs = {
   pluginSettings: PluginSettings | null
   autoUpdateInterval: AutoUpdateIntervalMinutes
   onProbeResult?: () => void
+  resolveStartBatchOptions?: () => { accountSelections?: Record<string, string> } | undefined
 }
 
 export function useProbe({
   pluginSettings,
   autoUpdateInterval,
   onProbeResult,
+  resolveStartBatchOptions,
 }: UseProbeArgs) {
   const {
     pluginStates,
@@ -30,10 +32,15 @@ export function useProbe({
 
   const handleBatchComplete = useCallback(() => {}, [])
 
-  const { startBatch } = useProbeEvents({
+  const { startBatch: startBatchRaw } = useProbeEvents({
     onResult: handleProbeResult,
     onBatchComplete: handleBatchComplete,
   })
+
+  const startBatch = useCallback(
+    (pluginIds?: string[]) => startBatchRaw(pluginIds, resolveStartBatchOptions?.()),
+    [resolveStartBatchOptions, startBatchRaw]
+  )
 
   const {
     autoUpdateNextAt,
