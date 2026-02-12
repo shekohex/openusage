@@ -413,6 +413,35 @@ fn transform_auth_payload_for_plugin(plugin_id: &str, raw_payload: &str) -> Resu
     }
 }
 
+fn should_use_cached_overlay(plugin_id: &str, transformed: &str) -> bool {
+    if plugin_id != "antigravity" {
+        return true;
+    }
+
+    let Ok(parsed) = serde_json::from_str::<Value>(transformed) else {
+        return false;
+    };
+    let Some(object) = parsed.as_object() else {
+        return false;
+    };
+
+    let expires_at_ms = match object.get("expiresAtMs") {
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .or_else(|| n.as_u64().and_then(|u| i64::try_from(u).ok())),
+        Some(Value::String(s)) => s.trim().parse::<i64>().ok(),
+        _ => None,
+    };
+    let Some(expires_at_ms) = expires_at_ms else {
+        return false;
+    };
+
+    let now_raw = time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000;
+    let now_ms = i64::try_from(now_raw).unwrap_or(0);
+    let min_ttl_ms = 60_000i64;
+    expires_at_ms > now_ms + min_ttl_ms
+}
+
 fn prepare_credential_overlay(
     plugin_id: &str,
     selection: &str,
@@ -437,7 +466,20 @@ fn prepare_credential_overlay(
         config_cache_fingerprint(config)
     );
     let transformed = if let Ok(locked) = cache.lock() {
-        locked.get(&cache_key).cloned()
+        if let Some(cached) = locked.get(&cache_key) {
+            if should_use_cached_overlay(plugin_id, cached) {
+                Some(cached.clone())
+            } else {
+                log::info!(
+                    "CLIProxyAPI cached overlay expired for {} (selection={}), refreshing",
+                    plugin_id,
+                    selected
+                );
+                None
+            }
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -1083,7 +1125,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{app_started_day_key, should_track_app_started};
+    use super::{app_started_day_key, should_track_app_started, should_use_cached_overlay};
 
     #[test]
     fn should_track_when_no_previous_day() {
@@ -1107,5 +1149,29 @@ mod tests {
         assert_ne!(v1_key, v2_key);
         assert!(v1_key.ends_with("0.6.2"));
         assert!(v2_key.ends_with("0.6.3"));
+    }
+
+    #[test]
+    fn antigravity_cached_overlay_rejected_when_expired() {
+        let payload = r#"{"accessToken":"x","expiresAtMs":1}"#;
+        assert!(!should_use_cached_overlay("antigravity", payload));
+    }
+
+    #[test]
+    fn antigravity_cached_overlay_rejected_when_invalid() {
+        assert!(!should_use_cached_overlay("antigravity", "{bad json"));
+    }
+
+    #[test]
+    fn antigravity_cached_overlay_used_when_fresh() {
+        let now_raw = time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000;
+        let now_ms = i64::try_from(now_raw).unwrap_or(0);
+        let payload = format!(r#"{{"accessToken":"x","expiresAtMs":{}}}"#, now_ms + 5 * 60_000);
+        assert!(should_use_cached_overlay("antigravity", &payload));
+    }
+
+    #[test]
+    fn non_antigravity_cached_overlay_is_unchanged() {
+        assert!(should_use_cached_overlay("codex", "{bad json"));
     }
 }
