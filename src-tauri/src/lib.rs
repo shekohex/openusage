@@ -430,8 +430,11 @@ fn transform_auth_payload_for_plugin(plugin_id: &str, raw_payload: &str) -> Resu
                 .map_err(|e| format!("failed to serialize transformed antigravity auth: {}", e))
         }
         "gemini" => {
-            let access_token = read_string_field(object, &["access_token", "accessToken"]);
-            let refresh_token = read_string_field(object, &["refresh_token", "refreshToken"]);
+            let token_object = object.get("token").and_then(|value| value.as_object());
+            let access_token = read_string_field(object, &["access_token", "accessToken"])
+                .or_else(|| token_object.and_then(|value| read_string_field(value, &["access_token", "accessToken"])));
+            let refresh_token = read_string_field(object, &["refresh_token", "refreshToken"])
+                .or_else(|| token_object.and_then(|value| read_string_field(value, &["refresh_token", "refreshToken"])));
             if access_token.is_none() && refresh_token.is_none() {
                 return Err("missing access_token and refresh_token".to_string());
             }
@@ -440,7 +443,20 @@ fn transform_auth_payload_for_plugin(plugin_id: &str, raw_payload: &str) -> Resu
                 .as_deref()
                 .and_then(parse_epoch_to_ms)
                 .or_else(|| {
+                    token_object
+                        .and_then(|value| read_string_field(value, &["expiry_date", "expiryDate"]))
+                        .as_deref()
+                        .and_then(parse_epoch_to_ms)
+                })
+                .or_else(|| {
                     read_string_field(object, &["expired", "expires_at", "expiresAt"])
+                        .as_deref()
+                        .map(parse_expiry_ms)
+                        .filter(|value| *value > 0)
+                })
+                .or_else(|| {
+                    token_object
+                        .and_then(|value| read_string_field(value, &["expiry", "expired", "expires_at", "expiresAt"]))
                         .as_deref()
                         .map(parse_expiry_ms)
                         .filter(|value| *value > 0)
@@ -450,6 +466,11 @@ fn transform_auth_payload_for_plugin(plugin_id: &str, raw_payload: &str) -> Resu
                     let base_ms = i64::try_from(now_ms).unwrap_or(0);
                     let ttl_sec = read_string_field(object, &["expires_in", "expiresIn"])
                         .and_then(|raw| raw.parse::<i64>().ok())
+                        .or_else(|| {
+                            token_object
+                                .and_then(|value| read_string_field(value, &["expires_in", "expiresIn"]))
+                                .and_then(|raw| raw.parse::<i64>().ok())
+                        })
                         .unwrap_or(3600);
                     base_ms + (ttl_sec * 1000)
                 });
@@ -465,13 +486,20 @@ fn transform_auth_payload_for_plugin(plugin_id: &str, raw_payload: &str) -> Resu
                 "expiry_date".to_string(),
                 Value::Number(serde_json::Number::from(expiry_date_ms)),
             );
-            if let Some(id_token) = read_string_field(object, &["id_token", "idToken"]) {
+            if let Some(id_token) = read_string_field(object, &["id_token", "idToken"])
+                .or_else(|| token_object.and_then(|value| read_string_field(value, &["id_token", "idToken"])))
+            {
                 out.insert("id_token".to_string(), Value::String(id_token));
             }
             if let Some(client_id) = read_string_field(
                 object,
                 &["client_id", "clientId", "oauth_client_id", "oauthClientId"],
-            ) {
+            )
+            .or_else(|| {
+                token_object.and_then(|value| {
+                    read_string_field(value, &["client_id", "clientId", "oauth_client_id", "oauthClientId"])
+                })
+            }) {
                 out.insert("client_id".to_string(), Value::String(client_id));
             }
             if let Some(client_secret) = read_string_field(
@@ -482,7 +510,20 @@ fn transform_auth_payload_for_plugin(plugin_id: &str, raw_payload: &str) -> Resu
                     "oauth_client_secret",
                     "oauthClientSecret",
                 ],
-            ) {
+            )
+            .or_else(|| {
+                token_object.and_then(|value| {
+                    read_string_field(
+                        value,
+                        &[
+                            "client_secret",
+                            "clientSecret",
+                            "oauth_client_secret",
+                            "oauthClientSecret",
+                        ],
+                    )
+                })
+            }) {
                 out.insert("client_secret".to_string(), Value::String(client_secret));
             }
 
@@ -1227,7 +1268,10 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{app_started_day_key, should_track_app_started, should_use_cached_overlay};
+    use super::{
+        app_started_day_key, should_track_app_started, should_use_cached_overlay,
+        transform_auth_payload_for_plugin,
+    };
 
     #[test]
     fn should_track_when_no_previous_day() {
@@ -1293,6 +1337,41 @@ mod tests {
     #[test]
     fn gemini_cached_overlay_rejected_when_invalid() {
         assert!(!should_use_cached_overlay("gemini", "{bad json"));
+    }
+
+    #[test]
+    fn gemini_transform_supports_nested_token_payloads() {
+        let raw = r#"{
+            "type": "gemini-cli",
+            "token": {
+                "access_token": "access-1",
+                "refresh_token": "refresh-1",
+                "client_id": "client-1",
+                "client_secret": "secret-1",
+                "expiry": "2099-01-01T00:00:00Z"
+            }
+        }"#;
+
+        let transformed =
+            transform_auth_payload_for_plugin("gemini", raw).expect("gemini transform succeeds");
+        let value: serde_json::Value =
+            serde_json::from_str(&transformed).expect("transformed payload parses");
+        let object = value.as_object().expect("transformed payload object");
+
+        assert_eq!(object.get("access_token").and_then(|v| v.as_str()), Some("access-1"));
+        assert_eq!(object.get("refresh_token").and_then(|v| v.as_str()), Some("refresh-1"));
+        assert_eq!(object.get("client_id").and_then(|v| v.as_str()), Some("client-1"));
+        assert_eq!(
+            object.get("client_secret").and_then(|v| v.as_str()),
+            Some("secret-1")
+        );
+        assert!(
+            object
+                .get("expiry_date")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_default()
+                > 4_000_000_000_000
+        );
     }
 
     #[test]
