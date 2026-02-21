@@ -651,9 +651,11 @@ function App() {
         }
 
         let authFiles: CliProxyAuthFile[] = []
+        let cliProxyAuthFilesLoaded = !cliProxyConfig.configured
         if (cliProxyConfig.configured) {
           try {
             authFiles = await invoke<CliProxyAuthFile[]>("cliproxyapi_list_auth_files")
+            cliProxyAuthFilesLoaded = true
           } catch (error) {
             console.error("Failed to load CLIProxy auth files:", error)
           }
@@ -661,21 +663,23 @@ function App() {
 
         const accountOptionsByPlugin = buildAccountOptionsByPlugin(authFiles)
         const effectiveSelections: CliProxyAccountSelections = { ...storedCliProxySelections }
-        for (const [pluginId, options] of Object.entries(accountOptionsByPlugin)) {
-          if (options.length === 0) continue
-          const current = (effectiveSelections[pluginId] || "").trim()
-          if (!current) {
-            effectiveSelections[pluginId] = options[0].value
-            continue
+        if (cliProxyAuthFilesLoaded) {
+          for (const [pluginId, options] of Object.entries(accountOptionsByPlugin)) {
+            if (options.length === 0) continue
+            const current = (effectiveSelections[pluginId] || "").trim()
+            if (!current) {
+              effectiveSelections[pluginId] = options[0].value
+              continue
+            }
+            const exists = options.some((option) => option.value === current)
+            if (!exists) {
+              effectiveSelections[pluginId] = options[0].value
+            }
           }
-          const exists = options.some((option) => option.value === current)
-          if (!exists) {
-            effectiveSelections[pluginId] = options[0].value
+          for (const pluginId of OVERLAY_ENABLED_PLUGIN_IDS) {
+            if (accountOptionsByPlugin[pluginId]?.length) continue
+            delete effectiveSelections[pluginId]
           }
-        }
-        for (const pluginId of OVERLAY_ENABLED_PLUGIN_IDS) {
-          if (accountOptionsByPlugin[pluginId]?.length) continue
-          delete effectiveSelections[pluginId]
         }
 
         const normalizedTrayShowPercentage = isTrayPercentageMandatory(storedTrayIconStyle)
@@ -692,7 +696,6 @@ function App() {
           setTrayShowPercentage(normalizedTrayShowPercentage)
           setGlobalShortcut(storedGlobalShortcut)
           setStartOnLogin(storedStartOnLogin)
-          setStartOnLogin(storedStartOnLogin)
           setCliProxyConfigured(cliProxyConfig.configured)
           setCliProxyBaseUrl(cliProxyConfig.baseUrl ?? "")
           setCliProxyApiKey("")
@@ -700,9 +703,11 @@ function App() {
           setCliProxySelections(effectiveSelections)
           setCliProxyError(null)
           cliProxySelectionsRef.current = effectiveSelections
-          void saveCliProxyAccountSelections(effectiveSelections).catch((error) => {
-            console.error("Failed to save CLIProxy account selections:", error)
-          })
+          if (cliProxyAuthFilesLoaded) {
+            void saveCliProxyAccountSelections(effectiveSelections).catch((error) => {
+              console.error("Failed to save CLIProxy account selections:", error)
+            })
+          }
           const enabledIds = getEnabledPluginIds(normalized)
           setLoadingForPlugins(enabledIds)
           try {

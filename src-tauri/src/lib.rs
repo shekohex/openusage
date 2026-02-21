@@ -536,7 +536,7 @@ fn transform_auth_payload_for_plugin(plugin_id: &str, raw_payload: &str) -> Resu
 
 fn should_use_cached_overlay(plugin_id: &str, transformed: &str) -> bool {
     if plugin_id != "antigravity" && plugin_id != "gemini" {
-        return true;
+        return false;
     }
 
     let Ok(parsed) = serde_json::from_str::<Value>(transformed) else {
@@ -1375,7 +1375,7 @@ mod tests {
     }
 
     #[test]
-    fn non_antigravity_cached_overlay_is_unchanged() {
-        assert!(should_use_cached_overlay("codex", "{bad json"));
+    fn non_antigravity_cached_overlay_requires_refresh() {
+        assert!(!should_use_cached_overlay("codex", "{bad json"));
     }
 }
