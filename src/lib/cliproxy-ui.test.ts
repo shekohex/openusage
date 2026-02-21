@@ -84,6 +84,12 @@ describe("cliproxy-ui", () => {
         kimi: "",
       })
     ).toEqual({ claude: "idx-c", gemini: "idx-g" })
+    expect(
+      filterCliProxySelectionsForProbe({
+        codex: ` ${LOCAL_ACCOUNT_VALUE} `,
+        claude: " idx-c ",
+      })
+    ).toEqual({ claude: " idx-c " })
   })
 
   it("skips duplicate and unsupported auth files", () => {

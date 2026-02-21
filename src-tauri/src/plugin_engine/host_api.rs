@@ -7,7 +7,13 @@ use std::sync::{Mutex, OnceLock};
 pub type CredentialOverlay = std::collections::HashMap<String, String>;
 pub type SharedCredentialOverlay = std::sync::Arc<std::sync::Mutex<CredentialOverlay>>;
 
-const WHITELISTED_ENV_VARS: [&str; 3] = ["CODEX_HOME", "ZAI_API_KEY", "GLM_API_KEY"];
+const WHITELISTED_ENV_VARS: [&str; 5] = [
+    "CODEX_HOME",
+    "ZAI_API_KEY",
+    "GLM_API_KEY",
+    "MINIMAX_API_KEY",
+    "MINIMAX_API_TOKEN",
+];
 
 fn last_non_empty_trimmed_line(text: &str) -> Option<String> {
     text.lines()

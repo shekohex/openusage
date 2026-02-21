@@ -187,8 +187,6 @@ vi.mock("@/lib/settings", async () => {
     saveStartOnLogin: state.saveStartOnLoginMock,
     loadCliProxyAccountSelections: state.loadCliProxyAccountSelectionsMock,
     saveCliProxyAccountSelections: state.saveCliProxyAccountSelectionsMock,
-    loadStartOnLogin: state.loadStartOnLoginMock,
-    saveStartOnLogin: state.saveStartOnLoginMock,
   }
 })
 
@@ -320,15 +318,15 @@ describe("App", () => {
     expect(state.setSizeMock).toHaveBeenCalled()
   })
 
-  it("does not track page_viewed on startup or navigation", async () => {
+  it("tracks page_viewed on startup and navigation", async () => {
     render(<App />)
     await waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
 
     const settingsButtons = await screen.findAllByRole("button", { name: "Settings" })
     await userEvent.click(settingsButtons[0])
 
-    expect(state.trackMock).not.toHaveBeenCalledWith("page_viewed", expect.anything())
-    expect(state.trackMock).not.toHaveBeenCalledWith("page_viewed", undefined)
+    expect(state.trackMock).toHaveBeenCalledWith("page_viewed", { page: "overview" })
+    expect(state.trackMock).toHaveBeenCalledWith("page_viewed", { page: "settings" })
   })
 
   it("skips saving settings when already normalized", async () => {
@@ -1471,6 +1469,34 @@ describe("App", () => {
 
     window.requestAnimationFrame = originalRaf
     vi.useRealTimers()
+  })
+
+  it("preserves stored CLIProxy selections when auth-file load fails on startup", async () => {
+    state.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_plugins") {
+        return [
+          { id: "codex", name: "Codex", iconUrl: "icon-codex", primaryProgressLabel: null, lines: [] },
+        ]
+      }
+      if (cmd === "cliproxyapi_get_config") {
+        return { configured: true, baseUrl: "http://localhost:8317" }
+      }
+      if (cmd === "cliproxyapi_list_auth_files") {
+        throw new Error("temporary fetch failure")
+      }
+      return null
+    })
+    state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["codex"], disabled: [] })
+    state.loadCliProxyAccountSelectionsMock.mockResolvedValueOnce({ codex: "idx-1" })
+
+    render(<App />)
+
+    await waitFor(() =>
+      expect(state.startBatchMock).toHaveBeenCalledWith(["codex"], {
+        accountSelections: { codex: "idx-1" },
+      })
+    )
+    expect(state.saveCliProxyAccountSelectionsMock).not.toHaveBeenCalledWith({ codex: "__local__" })
   })
 
   it("applies CLIProxy account selection from provider card", async () => {

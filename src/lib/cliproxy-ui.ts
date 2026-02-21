@@ -80,12 +80,13 @@ export function buildAccountOptionsByPlugin(authFiles: CliProxyAuthFile[]) {
 
 export function filterCliProxySelectionsForProbe(accountSelections: Record<string, string>) {
   return Object.fromEntries(
-    Object.entries(accountSelections).filter(
-      ([pluginId, value]) =>
-        OVERLAY_ENABLED_PLUGIN_IDS.has(pluginId) &&
-        typeof value === "string" &&
-        value.trim() !== "" &&
-        value !== LOCAL_ACCOUNT_VALUE
-    )
+    Object.entries(accountSelections).filter(([pluginId, value]) => {
+      if (!OVERLAY_ENABLED_PLUGIN_IDS.has(pluginId)) return false
+      if (typeof value !== "string") return false
+      const normalized = value.trim()
+      if (normalized === "") return false
+      if (normalized === LOCAL_ACCOUNT_VALUE) return false
+      return true
+    })
   )
 }
