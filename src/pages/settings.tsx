@@ -270,7 +270,6 @@ interface SettingsPageProps {
   onGlobalShortcutChange: (value: GlobalShortcut) => void;
   startOnLogin: boolean;
   onStartOnLoginChange: (value: boolean) => void;
-  providerIconUrl?: string;
   cliProxyConfigured: boolean;
   cliProxyBaseUrl: string;
   cliProxyApiKey: string;
@@ -303,7 +302,6 @@ export function SettingsPage({
   onGlobalShortcutChange,
   startOnLogin,
   onStartOnLoginChange,
-  providerIconUrl,
   cliProxyConfigured,
   cliProxyBaseUrl,
   cliProxyApiKey,

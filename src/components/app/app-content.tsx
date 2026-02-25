@@ -38,7 +38,6 @@ export type AppContentActionProps = {
   accountOptionsByPlugin: Record<string, Array<{ value: string; label: string }>>
   selectedAccountByPlugin: Record<string, string>
   onAccountChange: (pluginId: string, account: string) => void
-  providerIconUrl?: string
   cliProxyConfigured: boolean
   cliProxyBaseUrl: string
   cliProxyApiKey: string
@@ -73,7 +72,6 @@ export function AppContent({
   accountOptionsByPlugin,
   selectedAccountByPlugin,
   onAccountChange,
-  providerIconUrl,
   cliProxyConfigured,
   cliProxyBaseUrl,
   cliProxyApiKey,
@@ -148,7 +146,6 @@ export function AppContent({
         onGlobalShortcutChange={onGlobalShortcutChange}
         startOnLogin={startOnLogin}
         onStartOnLoginChange={onStartOnLoginChange}
-        providerIconUrl={providerIconUrl}
         cliProxyConfigured={cliProxyConfigured}
         cliProxyBaseUrl={cliProxyBaseUrl}
         cliProxyApiKey={cliProxyApiKey}
