@@ -491,7 +491,6 @@ function App() {
         accountOptionsByPlugin,
         selectedAccountByPlugin,
         onAccountChange: handleAccountSelectionChange,
-        providerIconUrl: navPlugins[0]?.iconUrl,
         cliProxyConfigured,
         cliProxyBaseUrl,
         cliProxyApiKey,
