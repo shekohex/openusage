@@ -3,7 +3,6 @@ mod app_nap;
 mod config;
 mod local_http_api;
 mod cliproxyapi;
-mod local_http_api;
 mod panel;
 mod plugin_engine;
 mod tray;
@@ -315,6 +314,12 @@ fn parse_epoch_to_ms(value: &str) -> Option<i64> {
     }
 }
 
+fn current_rfc3339_timestamp() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
 fn read_string_field(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
     keys.iter()
         .find_map(|key| value_to_string(object.get(*key)))
@@ -335,12 +340,7 @@ fn transform_auth_payload_for_plugin(plugin_id: &str, raw_payload: &str) -> Resu
                 .ok_or_else(|| "missing refresh_token".to_string())?;
             let id_token = read_string_field(object, &["id_token", "idToken"]);
             let account_id = read_string_field(object, &["account_id", "accountId"]);
-            let last_refresh = read_string_field(object, &["last_refresh", "lastRefresh"])
-                .unwrap_or_else(|| {
-                    time::OffsetDateTime::now_utc()
-                        .format(&time::format_description::well_known::Rfc3339)
-                        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
-                });
+            let last_refresh = current_rfc3339_timestamp();
 
             let mut tokens = serde_json::Map::new();
             tokens.insert("access_token".to_string(), Value::String(access_token));
@@ -566,6 +566,10 @@ fn transform_auth_payload_for_plugin(plugin_id: &str, raw_payload: &str) -> Resu
 }
 
 fn should_use_cached_overlay(plugin_id: &str, transformed: &str) -> bool {
+    if plugin_id == "codex" {
+        return false;
+    }
+
     if plugin_id != "antigravity" && plugin_id != "gemini" {
         return true;
     }
@@ -1449,7 +1453,28 @@ mod tests {
     }
 
     #[test]
-    fn non_antigravity_cached_overlay_is_unchanged() {
-        assert!(should_use_cached_overlay("codex", "{bad json"));
+    fn codex_cached_overlay_is_always_reloaded() {
+        assert!(!should_use_cached_overlay("codex", "{bad json"));
+    }
+
+    #[test]
+    fn codex_transform_resets_last_refresh_for_cliproxy_imports() {
+        let raw = r#"{
+            "access_token": "access-1",
+            "refresh_token": "refresh-1",
+            "last_refresh": "2000-01-01T00:00:00Z"
+        }"#;
+
+        let transformed =
+            transform_auth_payload_for_plugin("codex", raw).expect("codex transform succeeds");
+        let value: serde_json::Value =
+            serde_json::from_str(&transformed).expect("transformed payload parses");
+        let object = value.as_object().expect("transformed payload object");
+        let last_refresh = object
+            .get("last_refresh")
+            .and_then(|v| v.as_str())
+            .expect("last_refresh present");
+
+        assert_ne!(last_refresh, "2000-01-01T00:00:00Z");
     }
 }
